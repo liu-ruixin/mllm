@@ -739,6 +739,7 @@ class Qwen3_5VisionModel(nn.Module):
         Returns a **list** of per-image tensors, each of shape
         ``[num_merged_tokens_i, out_hidden_size]``.
         """
+        
         hidden = self.patch_embed(pixel_values)
 
         # Add learned absolute position embeddings
@@ -856,6 +857,7 @@ class Qwen3_5ForConditionalGeneration(nn.Module):
 
         # Vision encoder — NOT quantized
         vision_config = getattr(config, "vision_config", None)
+        self.spatial_merge_size = getattr(vision_config, "spatial_merge_size", 2)
         if vision_config is not None:
             self.visual = Qwen3_5VisionModel(
                 depth=getattr(vision_config, "depth", 27),
@@ -865,7 +867,7 @@ class Qwen3_5ForConditionalGeneration(nn.Module):
                 num_heads=getattr(vision_config, "num_heads", 16),
                 in_channels=getattr(vision_config, "in_channels", 3),
                 patch_size=getattr(vision_config, "patch_size", 16),
-                spatial_merge_size=getattr(vision_config, "spatial_merge_size", 2),
+                spatial_merge_size=self.spatial_merge_size,
                 temporal_patch_size=getattr(vision_config, "temporal_patch_size", 2),
                 out_hidden_size=getattr(vision_config, "out_hidden_size", tc.hidden_size),
                 num_position_embeddings=getattr(
@@ -903,7 +905,68 @@ class Qwen3_5ForConditionalGeneration(nn.Module):
         image_grid_thw: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         # Process vision inputs if provided
-        if input_embeds is None and pixel_values is not None and self.visual is not None:
+        pixel_values = (
+            pixel_values if pixel_values is not None
+            else getattr(forward_batch, "pixel_values", None)
+        )
+        image_grid_thw = (
+            image_grid_thw if image_grid_thw is not None
+            else getattr(forward_batch, "image_grid_thw", None)
+        )
+
+        if forward_batch.forward_mode.is_extend():
+            # Prefill: compute per-sequence 3-D position IDs from input_ids
+            # and image grids, then store per-request deltas for future decode.
+            mrope_positions_list: List[torch.Tensor] = []
+            deltas: List[int] = []
+            image_idx_offset = 0
+
+            for i in range(forward_batch.batch_size):
+                start = int(forward_batch.extend_start_loc[i].item())
+                length = int(forward_batch.extend_seq_lens[i].item())
+                seq_ids = input_ids[start : start + length]
+
+                # Determine how many images belong to this sequence.
+                num_img = int((seq_ids == self.vision_start_token_id).sum().item())
+                if image_grid_thw is not None and num_img > 0:
+                    thw_seq = image_grid_thw[
+                        image_idx_offset : image_idx_offset + num_img
+                    ]
+                    image_idx_offset += num_img
+                else:
+                    thw_seq = None
+
+                pos3d, delta = get_rope_index_qwen3_5(
+                    seq_ids,
+                    thw_seq,
+                    self.image_token_id,
+                    self.vision_start_token_id,
+                    self.spatial_merge_size,
+                )
+                mrope_positions_list.append(pos3d)
+                deltas.append(delta)
+
+            # Concatenate across sequences: [3, total_extend_tokens]
+            positions = torch.cat(mrope_positions_list, dim=1).contiguous()
+            forward_batch.mrope_position_deltas = torch.tensor(
+                deltas, dtype=torch.int64, device=input_ids.device
+            )
+        else:
+            # Decode: each sequence emits exactly one token.  Apply the stored
+            # per-request delta so the position matches the image extent.
+            stored_deltas = getattr(forward_batch, "mrope_position_deltas", None)
+            if stored_deltas is not None:
+                pos_1d = forward_batch.positions + stored_deltas
+            else:
+                pos_1d = forward_batch.positions
+            positions = pos_1d.unsqueeze(0).expand(3, -1).contiguous() # [3, batch_size]
+
+        if (
+            pixel_values is not None
+            and image_grid_thw is not None
+            and self.visual is not None
+            and not forward_batch.forward_mode.is_decode()
+        ): 
             input_embeds = self.model.embed_tokens(input_ids)
             ## Vision encoder → list of per-image tensors
             image_embeds_list = self.visual(pixel_values, grid_thw=image_grid_thw)

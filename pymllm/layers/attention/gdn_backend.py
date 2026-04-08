@@ -404,7 +404,7 @@ class GDNAttnBackend:
         # L2 normalize q and k per-head (matching use_qk_l2norm_in_kernel=True)
         q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
         k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
-
+        q = q * (q.shape[-1] ** -0.5)
         decay = torch.exp(g.float())    # [bs, num_v_heads]
         beta_f = beta.float()           # [bs, num_v_heads]
 
@@ -532,9 +532,8 @@ class GDNAttnBackend:
             # the flag is declared in the Python wrapper but never forwarded
             # to the CUDA kernel.  Pre-normalize q and k here, matching
             # sglang's approach (l2norm_fwd before calling with False).
-            q_fi = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
+            q_fi = q / (q.norm(dim=-1, keepdim=True) + 1e-6) * (q.shape[-1] ** -0.5)
             k_fi = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
-
             output, final_state = fi_prefill(
                 q=q_fi.contiguous(),
                 k=k_fi.contiguous(),
@@ -585,7 +584,7 @@ class GDNAttnBackend:
         # L2 normalize q and k per-head
         q = q / (q.norm(dim=-1, keepdim=True) + 1e-6)
         k = k / (k.norm(dim=-1, keepdim=True) + 1e-6)
-
+        q = q * (q.shape[-1] ** -0.5)
         # GQA expansion
         if num_k_heads != num_v_heads:
             repeats = num_v_heads // num_k_heads
