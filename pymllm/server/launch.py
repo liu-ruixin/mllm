@@ -522,21 +522,24 @@ def _messages_to_prompt(
     """
     # Preserve multimodal message structure for tokenizer.apply_chat_template.
     msg_dicts: List[Dict[str, Any]] = []
-    for msg in messages:
+    for msg in messages: # changed
         content = msg.content
         if isinstance(content, list):
-            mm_parts: List[Dict[str, Any]] = []
-            for part in content:
-                if part.type == "text" and part.text is not None:
-                    mm_parts.append({"type": "text", "text": part.text})
-                elif part.type == "image_url" and part.image_url is not None:
-                    # Keep image content so chat template can emit vision tokens.
-                    mm_parts.append(
-                        {"type": "image", "image": part.image_url.url}
+            content_list = []
+            for p in content:
+                if p.type == "text" and p.text:
+                    content_list.append({"type": "text", "text": p.text})
+                elif p.type == "image_url" and p.image_url is not None:
+                    content_list.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": p.image_url.url},
+                        }
                     )
-            content = mm_parts
+            content = content_list
         elif content is None:
             content = ""
+        
         d: Dict[str, Any] = {"role": msg.role, "content": content}
         if msg.name is not None:
             d["name"] = msg.name

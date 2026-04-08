@@ -25,7 +25,7 @@ Supports two transport modes (controlled by ``enable_shared_queue`` and
      :class:`MmItemMemoryPool` workspace and shared via pool-chunk IPC
      handles. Chunks are recycled; no GPU memory is leaked.
 """
-
+import torch
 import logging
 from multiprocessing.connection import Connection
 from typing import Any, Dict, List, Optional, Union
@@ -370,6 +370,13 @@ class TokenizerProcess:
         # 2. Multimodal pre-processing
         # ------------------------------------------------------------------ #
         mm_inputs = self._collect_mm_inputs(raw_request, text=input_text)
+        if mm_inputs and "image_inputs" in mm_inputs: # add
+            proc_ids = mm_inputs["image_inputs"].get("input_ids")
+            if proc_ids is not None:
+                # 替换纯文本 tokenizer 的 input_ids
+                if isinstance(proc_ids, torch.Tensor):
+                    proc_ids = proc_ids.squeeze(0).tolist()
+                input_ids = proc_ids
 
         # If AutoProcessor produced multimodal input_ids, they must override
         # the plain tokenizer result. Otherwise the prompt contains only a
