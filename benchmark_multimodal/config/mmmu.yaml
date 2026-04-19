@@ -1,0 +1,47 @@
+# MMMU multimodal benchmark.
+
+inherits: base.yaml
+
+run:
+  name: qwen3_5_vl_mmmu
+  description: MMMU multimodal benchmark.
+  mode: accuracy
+
+model:
+  name: Qwen3.5-VL
+  served_model_name: Qwen3.5-VL
+
+generation:
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 1024
+
+warmup:
+  enabled: true
+  requests: 1
+  max_tokens: 8
+
+dataset:
+  manifest: benchmark_multimodal/data/mmmu.jsonl
+  split: validation
+  limit: null
+  task_filter:
+    - mmmu
+
+input:
+  image_url_mode: path
+  allow_local_paths: true
+
+scoring:
+  enabled: true
+  default_scorer: normalized_match
+  scorers:
+    option: option_match
+    short_text: normalized_match
+
+output:
+  root_dir: benchmark_multimodal/results/mmmu
+  predictions_jsonl: predictions.jsonl
+  summary_json: summary.json
+  summary_csv: summary.csv
+  report_md: report.md

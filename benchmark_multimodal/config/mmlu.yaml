@@ -1,0 +1,50 @@
+# Text-only MMLU multiple-choice benchmark.
+
+inherits: base.yaml
+
+run:
+  name: qwen3_5_mmlu
+  description: MMLU text-only multiple-choice benchmark.
+  mode: accuracy
+
+model:
+  name: Qwen3.5-0.8B
+  served_model_name: Qwen3.5-0.8B
+
+generation:
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 4
+  stop:
+    - "\n"
+
+warmup:
+  enabled: true
+  requests: 1
+  max_tokens: 4
+
+dataset:
+  manifest: benchmark_multimodal/data/mmlu.jsonl
+  split: test
+  limit: null
+  task_filter:
+    - mmlu
+
+input:
+  image_url_mode: none
+  allow_local_paths: false
+
+scoring:
+  enabled: true
+  default_scorer: option_match
+  task_scorers:
+    mmlu: option_match
+  scorers:
+    option: option_match
+
+output:
+  root_dir: benchmark_multimodal/results/mmlu
+  predictions_jsonl: predictions.jsonl
+  summary_json: summary.json
+  summary_csv: summary.csv
+  report_md: report.md

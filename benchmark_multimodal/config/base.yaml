@@ -1,0 +1,110 @@
+# Shared defaults for pymllm multimodal benchmark runs.
+# Override these fields from task-specific configs when needed.
+
+run:
+  name: qwen3_5_multimodal_base
+  description: Common defaults for multimodal speed and accuracy benchmarks.
+  seed: 42
+  mode: accuracy_and_performance
+
+server:
+  base_url: http://127.0.0.1:30001
+  health_endpoint: /health
+  endpoint: /v1/chat/completions
+  timeout_s: 300
+  max_retries: 1
+  retry_backoff_s: 2.0
+
+model:
+  name: Qwen3.5-VL
+  served_model_name: Qwen3.5-VL
+
+request:
+  stream: true
+  stream_options:
+    include_usage: true
+  chat_template_kwargs:
+    enable_thinking: true
+  separate_reasoning: true
+  stream_reasoning: false
+
+generation:
+  temperature: 0.0
+  top_p: 1.0
+  top_k: -1
+  max_tokens: 64
+  stop: null
+  repetition_penalty: null
+
+warmup:
+  enabled: true
+  requests: 2
+  max_tokens: 8
+  sample:
+    id: warmup_000
+    task: warmup
+    messages:
+      - role: user
+        content:
+          - type: text
+            text: Say OK.
+
+runtime:
+  concurrency: 1
+  repeat_per_sample: 1
+  shuffle: false
+  fail_fast: false
+  save_raw_response: true
+
+input:
+  image_url_mode: path
+  allow_local_paths: true
+  image_preprocess:
+    enabled: false
+    max_side: null
+    max_pixels: null
+
+dataset:
+  manifest: benchmark_multimodal/data/sanity.jsonl
+  split: sanity
+  limit: null
+  task_filter: []
+
+scoring:
+  enabled: true
+  default_scorer: normalized_match
+  scorers:
+    short_text: normalized_match
+    option: option_match
+    regex: regex_match
+    open_ended: disabled
+  normalization:
+    lowercase: true
+    strip_punctuation: true
+    collapse_whitespace: true
+    strip_articles: false
+
+metrics:
+  latency:
+    - ttft_ms
+    - e2e_ms
+    - decode_ms
+  throughput:
+    - prompt_tps
+    - decode_tps
+  tokens:
+    - prompt_tokens
+    - completion_tokens
+    - total_tokens
+  accuracy:
+    - accuracy
+    - exact_match
+    - normalized_match
+
+output:
+  root_dir: benchmark_multimodal/results
+  run_dir_template: "{run_name}/{timestamp}"
+  predictions_jsonl: predictions.jsonl
+  summary_json: summary.json
+  summary_csv: summary.csv
+  report_md: report.md

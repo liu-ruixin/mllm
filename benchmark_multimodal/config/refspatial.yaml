@@ -1,0 +1,48 @@
+# RefSpatial-Bench point grounding benchmark, location + placement splits.
+
+inherits: base.yaml
+
+run:
+  name: qwen3_5_vl_refspatial_locplace
+  description: BAAI/RefSpatial-Bench location and placement splits.
+  mode: accuracy
+
+model:
+  name: Qwen3.5-VL
+  served_model_name: Qwen3.5-VL
+
+generation:
+  temperature: 0.0
+  top_p: 1.0
+  max_tokens: 64
+
+warmup:
+  enabled: true
+  requests: 1
+  max_tokens: 8
+
+dataset:
+  manifest: benchmark_multimodal/data/refspatial_locplace.jsonl
+  split: locplace
+  limit: null
+  task_filter:
+    - refspatial
+
+input:
+  image_url_mode: path
+  allow_local_paths: true
+
+scoring:
+  enabled: true
+  default_scorer: point_in_mask_match
+  scorers:
+    point: point_in_mask_match
+  point:
+    radius_px: 0
+
+output:
+  root_dir: benchmark_multimodal/results/refspatial
+  predictions_jsonl: predictions.jsonl
+  summary_json: summary.json
+  summary_csv: summary.csv
+  report_md: report.md
