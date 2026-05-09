@@ -25,10 +25,13 @@ Supports two transport modes (controlled by ``enable_shared_queue`` and
      :class:`MmItemMemoryPool` workspace and shared via pool-chunk IPC
      handles. Chunks are recycled; no GPU memory is leaked.
 """
+import base64
 import torch
 import logging
+from io import BytesIO
 from multiprocessing.connection import Connection
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import unquote, urlparse
 
 import zmq
 from transformers import AutoProcessor, AutoTokenizer
@@ -103,6 +106,7 @@ class TokenizerProcess:
         self._tokenizer = None
         self._mm_processor = None
         self._context_length: Optional[int] = None
+        self._image_token_id: Optional[int] = None
 
         self._init_tokenizers()
 
@@ -304,6 +308,9 @@ class TokenizerProcess:
                     context_len = int(getattr(hf_cfg, name))
                     break
         self._context_length = context_len
+        hf_cfg = cfg.get("hf_config")
+        if hf_cfg is not None and hasattr(hf_cfg, "image_token_id"):
+            self._image_token_id = int(getattr(hf_cfg, "image_token_id"))
 
         # Try to load multimodal processor (optional).
         try:
@@ -311,7 +318,15 @@ class TokenizerProcess:
                 tokenizer_path,
                 trust_remote_code=trust_remote_code,
             )
+            logger.info(
+                "Loaded multimodal processor: %s (image_token_id=%s)",
+                type(self._mm_processor).__name__,
+                self._image_token_id,
+            )
         except Exception:
+            logger.exception(
+                "Failed to load multimodal processor from %s", tokenizer_path
+            )
             # Text-only models don't provide a processor; that's fine.
             self._mm_processor = None
 
@@ -370,13 +385,42 @@ class TokenizerProcess:
         # 2. Multimodal pre-processing
         # ------------------------------------------------------------------ #
         mm_inputs = self._collect_mm_inputs(raw_request, text=input_text)
-        if mm_inputs and "image_inputs" in mm_inputs: # add
+        logger.info(
+            "Tokenizer multimodal state: rid=%s has_mm_processor=%s has_mm_inputs=%s has_image_inputs=%s",
+            raw_request.get("rid"),
+            self._mm_processor is not None,
+            mm_inputs is not None,
+            mm_inputs is not None and "image_inputs" in mm_inputs,
+        )
+        if mm_inputs and "image_inputs" in mm_inputs:
             proc_ids = mm_inputs["image_inputs"].get("input_ids")
             if proc_ids is not None:
-                # 替换纯文本 tokenizer 的 input_ids
                 if isinstance(proc_ids, torch.Tensor):
                     proc_ids = proc_ids.squeeze(0).tolist()
                 input_ids = proc_ids
+                image_token_count = (
+                    sum(1 for x in input_ids if x == self._image_token_id)
+                    if self._image_token_id is not None
+                    else -1
+                )
+                logger.info(
+                    "Tokenizer multimodal ids: rid=%s prompt_len_after_mm=%d image_token_count=%d",
+                    raw_request.get("rid"),
+                    len(input_ids),
+                    image_token_count,
+                )
+            else:
+                logger.warning(
+                    "Tokenizer multimodal processor produced image_inputs without input_ids: rid=%s keys=%s",
+                    raw_request.get("rid"),
+                    list(mm_inputs["image_inputs"].keys()),
+                )
+        elif raw_request.get("image_data") is not None:
+            logger.warning(
+                "Tokenizer image request did not produce image_inputs: rid=%s image_data_type=%s",
+                raw_request.get("rid"),
+                type(raw_request.get("image_data")).__name__,
+            )
 
         # If AutoProcessor produced multimodal input_ids, they must override
         # the plain tokenizer result. Otherwise the prompt contains only a
@@ -414,7 +458,7 @@ class TokenizerProcess:
 
         Supported input forms:
         - single PIL.Image / numpy array / torch.Tensor
-        - path string or bytes
+        - path string / ``file://`` URL / ``data:image/...`` URL / bytes
         - list/tuple of the above
         """
 
@@ -431,7 +475,27 @@ class TokenizerProcess:
                 return None
             if isinstance(obj, Image.Image):
                 return obj
-            if isinstance(obj, (str, bytes)):
+            if isinstance(obj, bytes):
+                if obj.startswith(b"data:image/"):
+                    obj = obj.decode("utf-8")
+                else:
+                    image = Image.open(BytesIO(obj))
+                    image.load()
+                    return image
+            if isinstance(obj, str):
+                if obj.startswith("file://"):
+                    parsed = urlparse(obj)
+                    path = unquote(parsed.path)
+                    if parsed.netloc and parsed.netloc not in {"", "localhost"}:
+                        path = f"//{parsed.netloc}{path}"
+                    obj = path
+                elif obj.startswith("data:image/"):
+                    header, _, payload = obj.partition(",")
+                    if ";base64" not in header:
+                        raise ValueError("Only base64-encoded data:image URIs are supported")
+                    image = Image.open(BytesIO(base64.b64decode(payload)))
+                    image.load()
+                    return image
                 return Image.open(obj)
             return obj
 
@@ -469,15 +533,29 @@ class TokenizerProcess:
             if self._mm_processor is not None:
                 images = self._normalize_image_input(image_data)
                 try:
+                    logger.info(
+                        "Running multimodal processor: image_count=%d text_len=%d image_data_type=%s",
+                        len(images),
+                        len(text if text is not None else str(raw_request.get("text") or "")),
+                        type(image_data).__name__,
+                    )
                     processor_inputs = self._mm_processor(
                         images=images,
                         text=text if text is not None else raw_request.get("text"),
                         return_tensors="pt",
                     )
+                    logger.info(
+                        "Multimodal processor output keys=%s",
+                        list(processor_inputs.keys()),
+                    )
                     mm["image_inputs"] = processor_inputs
                 except Exception:
+                    logger.exception("Image preprocessing failed in multimodal processor")
                     mm["image_data"] = image_data
             else:
+                logger.warning(
+                    "Image request received but no multimodal processor is available"
+                )
                 mm["image_data"] = image_data
 
         # Audio / video forwarded verbatim for now.

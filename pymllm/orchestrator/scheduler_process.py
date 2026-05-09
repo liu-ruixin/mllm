@@ -393,6 +393,9 @@ class SchedulerProcess:
         self._server_config = server_config
         self._model_config = model_config
         self._gpu_id = gpu_id
+        self._skip_special_tokens = not bool(
+            getattr(server_config, "reasoning_parser", None)
+        )
 
         # Shared queue configuration
         self._shared_queue = shared_queue
@@ -904,7 +907,7 @@ class SchedulerProcess:
                     "decode_ids": decode_ids,
                     "read_offsets": [req.read_offset],
                     "output_ids": list(req.output_ids),
-                    "skip_special_tokens": [True],
+                    "skip_special_tokens": [self._skip_special_tokens],
                     "prompt_tokens": [req.prompt_len],
                     "completion_tokens": [len(req.output_ids)],
                     "vit_prefill_ms": [req.vit_prefill_ms],
@@ -984,7 +987,7 @@ class SchedulerProcess:
             "decode_ids": decode_ids,
             "read_offsets": [req.read_offset],
             "output_ids": list(req.output_ids),
-            "skip_special_tokens": [True],
+            "skip_special_tokens": [self._skip_special_tokens],
             "prompt_tokens": [req.prompt_len],
             "completion_tokens": [len(req.output_ids)],
             "vit_prefill_ms": [req.vit_prefill_ms],

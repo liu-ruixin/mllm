@@ -18,6 +18,10 @@ generation:
   stop:
     - "\n"
 
+request:
+  chat_template_kwargs:
+    enable_thinking: false
+
 warmup:
   enabled: true
   requests: 1

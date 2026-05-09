@@ -16,15 +16,15 @@ server:
   retry_backoff_s: 2.0
 
 model:
-  name: Qwen3.5-VL
-  served_model_name: Qwen3.5-VL
+  name: Qwen3.5
+  served_model_name: Qwen3.5
 
 request:
   stream: true
   stream_options:
     include_usage: true
   chat_template_kwargs:
-    enable_thinking: true
+    enable_thinking: false
   separate_reasoning: true
   stream_reasoning: false
 
@@ -32,7 +32,7 @@ generation:
   temperature: 0.0
   top_p: 1.0
   top_k: -1
-  max_tokens: 64
+  max_tokens: 128
   stop: null
   repetition_penalty: null
 

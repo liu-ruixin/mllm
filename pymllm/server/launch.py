@@ -921,7 +921,12 @@ async def openai_chat_completions(obj: ChatCompletionRequest, request: Request):
                     # --- Phase 1: reasoning parser ---
                     reasoning_delta = ""
                     content_delta = raw_delta
-                    if r_parser and raw_delta:
+                    token_reasoning_closed = chunk.get("reasoning_closed")
+                    token_reasoning_used = (
+                        reasoning_type in {"qwen3", "qwen3-thinking"}
+                        and token_reasoning_closed is not None
+                    )
+                    if r_parser and raw_delta and not token_reasoning_used:
                         reasoning_delta, content_delta = r_parser.parse_stream_chunk(
                             raw_delta
                         )
@@ -951,7 +956,16 @@ async def openai_chat_completions(obj: ChatCompletionRequest, request: Request):
 
                     # Normal content
                     if content_delta:
-                        yield _make_sse({"content": content_delta})
+                        content_payload = {"content": content_delta}
+                        if token_reasoning_used:
+                            content_payload["reasoning_closed"] = token_reasoning_closed
+                            content_payload["visible_token_count"] = chunk.get(
+                                "visible_token_count"
+                            )
+                            content_payload["think_end_token_id"] = chunk.get(
+                                "think_end_token_id"
+                            )
+                        yield _make_sse(content_payload)
 
                     # Finish
                     if finish_reason is not None:
@@ -963,7 +977,16 @@ async def openai_chat_completions(obj: ChatCompletionRequest, request: Request):
                                 yield _make_sse({"tool_calls": [tc.to_openai_dict()]})
                             if has_tool_calls:
                                 finish_reason = "tool_calls"
-                        yield _make_sse({}, finish=finish_reason)
+                        finish_delta: Dict[str, Any] = {}
+                        if token_reasoning_used:
+                            finish_delta["reasoning_closed"] = token_reasoning_closed
+                            finish_delta["visible_token_count"] = chunk.get(
+                                "visible_token_count"
+                            )
+                            finish_delta["think_end_token_id"] = chunk.get(
+                                "think_end_token_id"
+                            )
+                        yield _make_sse(finish_delta, finish=finish_reason)
 
             except Exception as e:
                 logger.error("[v1/chat/completions] stream error: %s", e, exc_info=True)

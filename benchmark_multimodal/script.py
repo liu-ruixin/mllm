@@ -306,14 +306,14 @@ def build_mmmu_prompt(
 ) -> str:
     if is_multiple_choice:
         letters = option_letters(len(choices))
+        letters_text = ", ".join(letters)
         options = "\n".join(
             f"{letter}. {choice}" for letter, choice in zip(letters, choices)
         )
         return (
             "Answer the following multimodal multiple-choice question. "
-            "Return exactly `Final answer: X`, where X is exactly one option letter. "
-            "Do not write reasoning, calculations, markdown, or any other text. "
-            "If unsure, still choose the most likely option.\n\n"
+            "Solve the problem using the image when needed. "
+            f"The final line must be exactly `Final answer: X`, where X is one of {letters_text}.\n\n"
             f"Question: {question}\n\n"
             f"{options}\n\n"
             "Final answer:"
@@ -497,6 +497,51 @@ def build_multimodal_content(prompt: str, image_paths: List[str]) -> List[Dict[s
     return content
 
 
+def build_placeholder_multimodal_content(
+    prompt: str,
+    image_paths: List[str],
+) -> List[Dict[str, Any]]:
+    """Insert image objects at <image 1>, <image 2>, ... placeholders."""
+    if not image_paths:
+        return [{"type": "text", "text": prompt}]
+
+    content: List[Dict[str, Any]] = []
+    used_indices: set[int] = set()
+    cursor = 0
+    pattern = re.compile(r"<image\s+(\d+)>", flags=re.IGNORECASE)
+
+    for match in pattern.finditer(prompt):
+        before = prompt[cursor : match.start()]
+        if before:
+            content.append({"type": "text", "text": before})
+
+        image_index = int(match.group(1)) - 1
+        if 0 <= image_index < len(image_paths):
+            content.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image_paths[image_index]},
+                }
+            )
+            used_indices.add(image_index)
+        else:
+            content.append({"type": "text", "text": match.group(0)})
+        cursor = match.end()
+
+    tail = prompt[cursor:]
+    if tail:
+        content.append({"type": "text", "text": tail})
+
+    if not used_indices:
+        return build_multimodal_content(prompt, image_paths)
+
+    for index, image_path in enumerate(image_paths):
+        if index not in used_indices:
+            content.append({"type": "image_url", "image_url": {"url": image_path}})
+
+    return content
+
+
 def convert_mmmu_record(
     record: Dict[str, Any],
     *,
@@ -536,23 +581,14 @@ def convert_mmmu_record(
         sample_id=sample_id,
     )
 
-    content: List[Dict[str, Any]] = [
-        {
-            "type": "text",
-            "text": build_mmmu_prompt(
-                question,
-                choices,
-                is_multiple_choice=is_multiple_choice,
-            ),
-        }
-    ]
-    for image_path in image_paths:
-        content.append(
-            {
-                "type": "image_url",
-                "image_url": {"url": image_path},
-            }
-        )
+    content = build_placeholder_multimodal_content(
+        build_mmmu_prompt(
+            question,
+            choices,
+            is_multiple_choice=is_multiple_choice,
+        ),
+        image_paths,
+    )
 
     return {
         "id": sample_id,

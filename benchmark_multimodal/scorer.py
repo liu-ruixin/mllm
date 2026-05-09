@@ -9,6 +9,7 @@ from typing import Any, Dict, Iterable, List
 
 
 ScoreResult = Dict[str, Any]
+SPECIAL_TOKEN_PATTERN = re.compile(r"<\|[^|]+?\|>|</?s>|<pad>")
 
 
 def _as_answer_list(answer: Any) -> List[str]:
@@ -40,6 +41,11 @@ def normalize_text(text: Any, options: Dict[str, Any] | None = None) -> str:
         value = value.strip()
 
     return value
+
+
+def strip_special_tokens(text: Any) -> str:
+    value = "" if text is None else str(text)
+    return SPECIAL_TOKEN_PATTERN.sub("", value).strip()
 
 
 def exact_match(
@@ -80,37 +86,66 @@ def normalized_match(
     }
 
 # 选择题
-def extract_option_candidates(prediction: Any) -> List[str]:
-    pred = "" if prediction is None else str(prediction)
+def extract_explicit_option(prediction: Any) -> str | None:
+    pred = strip_special_tokens(prediction)
     normalized_pred = normalize_text(
         pred,
         {"lowercase": True, "strip_punctuation": False, "collapse_whitespace": True},
     )
 
     priority_patterns = [
-        r"(?:final\s+answer|final|answer|答案)\s*(?:is|=|:|：)?\s*\(?\s*([a-z])\s*\)?",
-        r"(?:option|choice)\s*(?:is|=|:|：)?\s*\(?\s*([a-z])\s*\)?",
+        r"\bfinal\s+answer\b\s*(?::|：|=|\bis\b)\s*\(?\s*([a-j])\s*\)?",
+        r"答案\s*(?:=|:|：)\s*\(?\s*([a-j])\s*\)?",
     ]
     for pattern in priority_patterns:
         matches = re.findall(pattern, normalized_pred, flags=re.IGNORECASE)
         if matches:
-            return [matches[-1].lower()]
+            return matches[-1].lower()
 
-    boxed = re.findall(r"\\boxed\{\s*([a-z])\s*\}", normalized_pred, flags=re.IGNORECASE)
-    if boxed:
-        return [boxed[-1].lower()]
+    return None
 
-    standalone = [
-        token.lower()
-        for token in re.findall(r"\b[a-z]\b", normalized_pred)
+
+def extract_single_option(prediction: Any) -> str | None:
+    pred = strip_special_tokens(prediction)
+    match = re.fullmatch(r"\s*\(?\s*([a-jA-J])\s*\)?\.?\s*", pred)
+    return match.group(1).lower() if match else None
+
+
+def extract_option_candidates(prediction: Any) -> List[str]:
+    pred = strip_special_tokens(prediction)
+    explicit = extract_explicit_option(pred)
+    if explicit:
+        return [explicit]
+    single = extract_single_option(pred)
+    if single:
+        return [single]
+
+    return []
+
+
+def postprocess_prediction(sample: Dict[str, Any], prediction: Any) -> str:
+    """Clean raw model output for scoring/reporting while preserving raw text elsewhere."""
+    cleaned = strip_special_tokens(prediction)
+    answer_type = sample.get("answer_type")
+
+    if answer_type == "option":
+        explicit = extract_explicit_option(cleaned)
+        if explicit:
+            return explicit.upper()
+        single = extract_single_option(cleaned)
+        return single.upper() if single else ""
+
+    final_patterns = [
+        r"\bfinal\s+answer\b\s*(?:=|:|：)\s*(.+)$",
+        r"\bfinal\s+answer\b\s+is\s+(.+)$",
+        r"答案\s*(?:=|:|：)\s*(.+)$",
     ]
-    if standalone:
-        # Long chain-of-thought often mentions option letters in the analysis.
-        # The final standalone option is usually closer to the model's answer.
-        return [standalone[-1]]
-
-    compact = normalize_text(prediction, {"lowercase": True, "strip_punctuation": True})
-    return [compact] if compact else []
+    final_matches: List[str] = []
+    for pattern in final_patterns:
+        final_matches.extend(re.findall(pattern, cleaned, flags=re.IGNORECASE | re.DOTALL))
+    if final_matches:
+        return strip_special_tokens(final_matches[-1])
+    return cleaned
 
 
 def option_match(
@@ -123,7 +158,12 @@ def option_match(
         for answer in _as_answer_list(answers)
     ]
     answer_list = [answer for answer in answer_list if answer]
-    candidates = extract_option_candidates(prediction)
+    opts = normalization or {}
+    if opts.get("require_final_or_single", False):
+        candidate = extract_explicit_option(prediction) or extract_single_option(prediction)
+        candidates = [candidate] if candidate else []
+    else:
+        candidates = extract_option_candidates(prediction)
 
     correct = any(candidate in answer_list for candidate in candidates)
     return {

@@ -77,6 +77,7 @@ def build_output_record(
         "result": {
             "status": status_from_row(row),
             "prediction": row.get("prediction", ""),
+            "raw_prediction": row.get("raw_prediction"),
             "error": row.get("error"),
         },
         "score": score,
@@ -86,6 +87,9 @@ def build_output_record(
             "completion_tokens": row.get("usage", {}).get("completion_tokens", 0),
             "total_tokens": row.get("usage", {}).get("total_tokens", 0),
             "finish_reason": row.get("usage", {}).get("finish_reason"),
+            "reasoning_closed": row.get("usage", {}).get("reasoning_closed"),
+            "visible_token_count": row.get("usage", {}).get("visible_token_count"),
+            "think_end_token_id": row.get("usage", {}).get("think_end_token_id"),
         },
         "throughput": row.get("throughput", {}),
         "stream": {
@@ -160,6 +164,8 @@ def print_result_card(record: Dict[str, Any], output_path: str | Path) -> None:
     print(f"  Completion : {usage.get('completion_tokens', 0)}")
     print(f"  Total      : {usage.get('total_tokens', 0)}")
     print(f"  Finish     : {usage.get('finish_reason') or 'n/a'}")
+    print(f"  Rsn Closed : {usage.get('reasoning_closed')}")
+    print(f"  Visible Tok: {usage.get('visible_token_count')}")
 
     print("\nThroughput")
     print(f"  Prompt TPS : {fmt_float(throughput.get('prompt_tps'))}")

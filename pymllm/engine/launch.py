@@ -226,6 +226,7 @@ class Engine:
             "tensor_transport_mode": transport_mode,
             "cuda_ipc_pool_size_mb": cfg.server.cuda_ipc_pool_size_mb,
             "cuda_ipc_recycle_interval": cfg.server.cuda_ipc_recycle_interval,
+            "reasoning_parser": cfg.server.reasoning_parser,
             "log_level": cfg.server.log_level,
         }
 

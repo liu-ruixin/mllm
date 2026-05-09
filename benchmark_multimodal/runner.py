@@ -15,6 +15,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from benchmark_multimodal.scorer import postprocess_prediction
 from benchmark_multimodal.scorer import score_prediction 
 from benchmark_multimodal.report import print_result_card 
 from benchmark_multimodal.report import build_output_record 
@@ -128,8 +129,14 @@ def build_payload(sample: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any]
 
     if generation.get("stop") is not None:
         payload["stop"] = generation["stop"]
+    if generation.get("frequency_penalty") is not None:
+        payload["frequency_penalty"] = generation["frequency_penalty"]
+    if generation.get("presence_penalty") is not None:
+        payload["presence_penalty"] = generation["presence_penalty"]
     if generation.get("repetition_penalty") is not None:
         payload["repetition_penalty"] = generation["repetition_penalty"]
+    if generation.get("seed") is not None:
+        payload["seed"] = generation["seed"]
 
     return {key: value for key, value in payload.items() if value is not None}
 
@@ -164,6 +171,9 @@ def run_one_sample(sample: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any
     reasoning_chunk_count = 0
     role_chunk_count = 0
     finish_reason = None
+    reasoning_closed = None
+    visible_token_count = None
+    think_end_token_id = None
     error = None
 
     try:
@@ -204,6 +214,12 @@ def run_one_sample(sample: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any
                 if choices[0].get("finish_reason") is not None:
                     finish_reason = choices[0].get("finish_reason")
                 delta = choices[0].get("delta") or {}
+                if delta.get("reasoning_closed") is not None:
+                    reasoning_closed = delta.get("reasoning_closed")
+                if delta.get("visible_token_count") is not None:
+                    visible_token_count = delta.get("visible_token_count")
+                if delta.get("think_end_token_id") is not None:
+                    think_end_token_id = delta.get("think_end_token_id")
                 if delta.get("role"):
                     role_chunk_count += 1
                 if delta.get("reasoning_content"):
@@ -271,6 +287,9 @@ def run_one_sample(sample: Dict[str, Any], cfg: Dict[str, Any]) -> Dict[str, Any
             "role_chunk_count": role_chunk_count,
             "reasoning_chunk_count": reasoning_chunk_count,
             "finish_reason": finish_reason,
+            "reasoning_closed": reasoning_closed,
+            "visible_token_count": visible_token_count,
+            "think_end_token_id": think_end_token_id,
         },
         "throughput": {
             "prompt_tps": prompt_tps,
@@ -408,6 +427,7 @@ def build_prediction_record(
         "answer_type": sample.get("answer_type"),
         "answer": sample.get("answer"),
         "prediction": row.get("prediction", ""),
+        "raw_prediction": row.get("raw_prediction"),
         "status": "error" if row.get("error") else "ok",
         "error": row.get("error"),
         "score": score,
@@ -417,6 +437,9 @@ def build_prediction_record(
             "completion_tokens": row.get("usage", {}).get("completion_tokens", 0),
             "total_tokens": row.get("usage", {}).get("total_tokens", 0),
             "finish_reason": row.get("usage", {}).get("finish_reason"),
+            "reasoning_closed": row.get("usage", {}).get("reasoning_closed"),
+            "visible_token_count": row.get("usage", {}).get("visible_token_count"),
+            "think_end_token_id": row.get("usage", {}).get("think_end_token_id"),
         },
         "throughput": row.get("throughput", {}),
         "stream": {
@@ -462,6 +485,10 @@ def run_batch(
 
     for idx, sample in enumerate(samples, start=1):
         row = run_one_sample(sample, cfg)
+        raw_prediction = row.get("prediction", "")
+        row = dict(row)
+        row["raw_prediction"] = raw_prediction
+        row["prediction"] = postprocess_prediction(sample, raw_prediction)
         score = score_prediction(sample, row.get("prediction", ""), cfg)
         record = build_prediction_record(sample, row, score)
         records.append(record)
@@ -475,6 +502,8 @@ def run_batch(
             f"status={status} correct={correct_text} "
             f"ttft={row['latency']['ttft_ms']:.1f}ms "
             f"finish={row.get('usage', {}).get('finish_reason') or 'n/a'} "
+            f"reasoning_closed={row.get('usage', {}).get('reasoning_closed')} "
+            f"visible_tokens={row.get('usage', {}).get('visible_token_count')} "
             f"pred={row.get('prediction', '').strip()!r}"
         )
 
@@ -510,6 +539,10 @@ def run_single(
     warmup_rows = run_warmup(sample, cfg, args.no_warmup)
     print("\n--- Measured request ---")
     row = run_one_sample(sample, cfg)
+    raw_prediction = row.get("prediction", "")
+    row = dict(row)
+    row["raw_prediction"] = raw_prediction
+    row["prediction"] = postprocess_prediction(sample, raw_prediction)
     score = score_prediction(sample, row.get("prediction", ""), cfg)
 
     output_path = args.output or OUTPUT_PATH

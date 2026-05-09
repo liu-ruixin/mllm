@@ -35,6 +35,8 @@ class DetokenizerProcess:
         self._send_to_rr: Optional[zmq.Socket] = None
 
         self._tokenizer = None
+        self._reasoning_parser = self._tokenizer_cfg.get("reasoning_parser")
+        self._qwen_think_end_token_ids: List[int] = []
         # Track previous decoded text per rid for incremental (delta) output
         self._rid_to_prev_text: Dict[str, str] = {}
 
@@ -73,7 +75,104 @@ class DetokenizerProcess:
             tokenizer_path,
             trust_remote_code=trust_remote_code,
         )
+        self._qwen_think_end_token_ids = self._resolve_qwen_think_end_token_ids()
         logger.info("Detokenizer loaded tokenizer from %s", tokenizer_path)
+        if self._uses_qwen_reasoning_parser():
+            logger.info(
+                "Qwen reasoning token-id parser enabled; </think> token ids: %s",
+                self._qwen_think_end_token_ids,
+            )
+
+    def _resolve_qwen_think_end_token_ids(self) -> List[int]:
+        if self._tokenizer is None:
+            return []
+
+        token_ids: List[int] = []
+        unk_id = getattr(self._tokenizer, "unk_token_id", None)
+
+        convert = getattr(self._tokenizer, "convert_tokens_to_ids", None)
+        if convert is not None:
+            try:
+                token_id = convert("</think>")
+            except Exception:
+                token_id = None
+            if isinstance(token_id, int) and token_id != unk_id:
+                token_ids.append(token_id)
+
+        encode = getattr(self._tokenizer, "encode", None)
+        if encode is not None:
+            try:
+                encoded = encode("</think>", add_special_tokens=False)
+            except Exception:
+                encoded = []
+            if isinstance(encoded, list) and len(encoded) == 1:
+                token_id = encoded[0]
+                if isinstance(token_id, int) and token_id != unk_id:
+                    token_ids.append(token_id)
+
+        # Qwen3 runner in this repo uses 151668 as </think>; Qwen3.5 uses
+        # 248069 in the local serving setup.
+        token_ids.append(151668)
+        token_ids.append(248069)
+        return list(dict.fromkeys(token_ids))
+
+    def _uses_qwen_reasoning_parser(self) -> bool:
+        return self._reasoning_parser in {"qwen3", "qwen3-thinking"}
+
+    def _find_last_think_end(self, output_ids: List[int]) -> Optional[int]:
+        if not self._qwen_think_end_token_ids:
+            return None
+
+        end_ids = set(self._qwen_think_end_token_ids)
+        for index in range(len(output_ids) - 1, -1, -1):
+            if output_ids[index] in end_ids:
+                return index
+        return None
+
+    def _decode_visible_text(
+        self,
+        output_ids: List[int],
+        *,
+        skip_special_tokens: bool,
+        finished_reason: Optional[str],
+    ) -> tuple[str, bool, int, Optional[int]]:
+        if self._tokenizer is None:
+            return "", False, 0, None
+
+        if not self._uses_qwen_reasoning_parser():
+            text = self._tokenizer.decode(
+                output_ids,
+                skip_special_tokens=skip_special_tokens,
+            )
+            return (
+                text,
+                False,
+                len(output_ids),
+                None,
+            )
+
+        think_end_index = self._find_last_think_end(output_ids)
+        if think_end_index is None:
+            return (
+                self._tokenizer.decode(
+                    output_ids,
+                    skip_special_tokens=skip_special_tokens,
+                ),
+                False,
+                len(output_ids),
+                None,
+            )
+
+        content_ids = output_ids[think_end_index + 1 :]
+        return (
+            self._tokenizer.decode(
+                content_ids,
+                skip_special_tokens=True,
+            ),
+            True,
+            len(content_ids),
+            output_ids[think_end_index],
+        )
 
     def event_loop(self) -> None:
         """Infinite loop: recv token IDs -> detokenize -> send text to RR."""
@@ -148,14 +247,40 @@ class DetokenizerProcess:
                 llm_decode_ms_list[i] if i < len(llm_decode_ms_list) else None
             )
 
-            # Decode text from output_ids
-            if self._tokenizer is not None:
-                text = self._tokenizer.decode(
-                    output_ids,
-                    skip_special_tokens=skip_special,
+            (
+                text,
+                reasoning_closed,
+                visible_token_count,
+                think_end_token_id,
+            ) = self._decode_visible_text(
+                output_ids,
+                skip_special_tokens=skip_special,
+                finished_reason=finished_reason,
+            )
+            if (
+                self._uses_qwen_reasoning_parser()
+                and is_finished
+                and not reasoning_closed
+                and not text
+                and self._tokenizer is not None
+            ):
+                tail_ids = list(output_ids[-50:])
+                convert = getattr(self._tokenizer, "convert_ids_to_tokens", None)
+                if convert is not None:
+                    try:
+                        tail_tokens = convert(tail_ids)
+                    except Exception:
+                        tail_tokens = []
+                else:
+                    tail_tokens = []
+                logger.warning(
+                    "Qwen reasoning did not close; finish=%s, "
+                    "completion_tokens=%s, tail_ids=%s, tail_tokens=%s",
+                    finished_reason,
+                    completion_tokens,
+                    tail_ids,
+                    tail_tokens,
                 )
-            else:
-                text = ""
 
             # Compute incremental delta by diffing against previous text
             prev_text = self._rid_to_prev_text.get(rid, "")
@@ -175,6 +300,9 @@ class DetokenizerProcess:
                 "finished_reason": finished_reason,
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
+                "reasoning_closed": reasoning_closed,
+                "visible_token_count": visible_token_count,
+                "think_end_token_id": think_end_token_id,
             }
             if vit_prefill_ms is not None:
                 result["vit_prefill_ms"] = vit_prefill_ms
