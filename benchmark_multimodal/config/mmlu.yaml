@@ -28,7 +28,7 @@ warmup:
   max_tokens: 4
 
 dataset:
-  manifest: benchmark_multimodal/data/mmlu.jsonl
+  manifest: benchmark_multimodal/data/mmlu_college_computer_science.jsonl
   split: test
   limit: null
   task_filter:

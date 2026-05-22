@@ -88,6 +88,34 @@ class ModelRunnerProcess:
         # Maps radix tree node id -> GDN track slot index
         self._node_id_to_gdn_track_slot: Dict[int, int] = {}
 
+    @staticmethod
+    def _has_visual_mm_inputs(meta: Dict[str, Any]) -> bool:
+        """Whether a request carries vision tensors that must be re-prefilled.
+
+        Current multimodal forward expects image placeholder tokens to remain
+        in the extend ``input_ids`` so they can be replaced with visual
+        features. Prefix-cache trimming can remove those tokens while
+        ``pixel_values`` are still attached, which leads to:
+        `Image features and image tokens do not match`.
+        """
+        mm = meta.get("mm_inputs")
+        if not mm:
+            return False
+        src = mm.get("image_inputs") if isinstance(mm, dict) and "image_inputs" in mm else mm
+        if src is None:
+            return False
+        if hasattr(src, "get"):
+            return (
+                src.get("pixel_values") is not None
+                or src.get("image_grid_thw") is not None
+                or src.get("video_grid_thw") is not None
+            )
+        return (
+            getattr(src, "pixel_values", None) is not None
+            or getattr(src, "image_grid_thw", None) is not None
+            or getattr(src, "video_grid_thw", None) is not None
+        )
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -527,6 +555,13 @@ class ModelRunnerProcess:
 
         for m in requests_meta:
             rid = m["rid"]
+            if self._has_visual_mm_inputs(m):
+                logger.debug(
+                    "Skipping radix cache insert for multimodal request rid=%s",
+                    rid,
+                )
+                self._rid_to_cache_protected_len[rid] = 0
+                continue
             input_ids = self._rid_to_input_ids.get(rid)
             if input_ids is None:
                 continue
@@ -675,11 +710,20 @@ class ModelRunnerProcess:
         for i, m in enumerate(requests_meta):
             full_input_ids: List[int] = m.get("input_ids", [])
             full_seq_len = seq_lens[i]
+            has_visual_mm = self._has_visual_mm_inputs(m)
 
             # Store input_ids for later radix cache insert
             self._rid_to_input_ids[m["rid"]] = full_input_ids
 
-            if cache is not None and len(full_input_ids) > 0:
+            if has_visual_mm:
+                prefix_len = 0
+                last_node = None
+                cached_indices = None
+                logger.debug(
+                    "Skipping radix cache match for multimodal request rid=%s",
+                    m["rid"],
+                )
+            elif cache is not None and len(full_input_ids) > 0:
                 key = RadixKey(full_input_ids)
                 match_result = cache.match_prefix(key)
                 prefix_len = match_result.prefix_len
